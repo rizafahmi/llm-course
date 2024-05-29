@@ -3,6 +3,8 @@ import fs from 'fs';
 
 const LLAMA_API_URL = process.env.LLAMA_API_URL || 'http://127.0.0.1:11434/api/generate';
 
+const HISTORY_MESSAGE = "Before formulating a thought, consider the following conversation history.";
+
 const SYSTEM_MESSAGE = `You run in a process of Question, Thought, Action, Observation.
 
 Use Thought to describe your thoughts about the question you have been asked.
@@ -32,8 +34,6 @@ Action: exchange: USD EUR
 Observation: 0.8276 EUR for 1 USD.
 Answer: The current exchange rate is 0.8276 EUR for 1 USD.
 
-Let's go!
-
 `;
 
 async function llama(question) {
@@ -58,12 +58,17 @@ async function llama(question) {
   return response.trim();
 }
 
-async function reason(inquiry) {
-  const prompt = SYSTEM_MESSAGE + "\n\n" + inquiry;
+function context(history) {
+  if (history.length > 0) {
+    const recents = history.slice(-3 * 2);
+    return `${HISTORY_MESSAGE}\n\n${recents.join("\n")}`;
+  } 
+}
+
+async function reason(history, inquiry) {
+  const prompt = `${SYSTEM_MESSAGE}\n\n${context(history)}\n\nNow let's answer some question!\n\n${inquiry}`;
   const response = await llama(prompt);
 
-  console.log(`--------------\n${response}\n--------------`)
-  
   let conclusion = "";
 
   const action = await act(response);
@@ -125,6 +130,8 @@ async function answer(text) {
   return answer;
 }
 
+const history = ["The conversation discusses the capital and popular dish of Indonesia. The capital is Jakarta, and Nasi Goreng is considered the best food from the country."];
+
 async function handler(req, res) {
   const { url } = req;
 
@@ -137,9 +144,11 @@ async function handler(req, res) {
     const parsedUrl = new URL(`http://localhost${url}`);
     const { search } = parsedUrl;
     const question = decodeURIComponent(search.substring(1));
-    const answer = await reason(`Question: ${question}`);
+    history.push(question);
+    const answer = await reason(history, `Question: ${question}`);
     console.log({ question, answer });
     res.writeHead(200).end(answer);
+    history.push(answer);
   } else {
     res.writeHead(404).end("Not Found");
   }
