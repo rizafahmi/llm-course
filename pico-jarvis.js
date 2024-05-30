@@ -132,6 +132,16 @@ let state = {
   history: [],
   source: "No source",
   reference: "No reference"
+};
+
+// !history
+function command(key, response) {
+  const value = state[key.substring(1)];
+  if (value && typeof value === "string") {
+    response.writeHead(200).end(value);
+    return true;
+  }
+  return false;
 }
 
 async function handler(req, res) {
@@ -147,6 +157,16 @@ async function handler(req, res) {
     const parsedUrl = new URL(`http://localhost${url}`);
     const { search } = parsedUrl;
     const question = decodeURIComponent(search.substring(1));
+
+    // Command
+    if (question === "!reset") {
+      state.history.length = 0;
+      response.writeHead(200).end("Reset the history...");
+      return;
+    }
+    if (command(question, res)) {
+      return;
+    }
     const answer = await reason(state.history, `Question: ${question}`);
     res.writeHead(200).end(answer);
     state.history.push({question, answer});
