@@ -11,9 +11,8 @@ Use Thought to describe your thoughts about the question you have been asked.
 Observation will be the result of running those actions.
 
 If you can not answer the question from your memory, use Action to run one of these actions available to you:
-
-- exchange: from to
 - lookup: terms
+
 Here are some sample sessions.
 
 Question: What is capital of france?
@@ -27,12 +26,6 @@ Thought: This is about general knowledge, I can recall the answer from my memory
 Action: lookup: painter of Mona Lisa.
 Observation: Mona Lisa was painted by Leonardo da Vinci .
 Answer: Leonardo da Vinci painted Mona Lisa.
-
-Question: What is the exchange rate from USD to EUR?
-Thought: This is about currency exchange rates, I need to check the current rate.
-Action: exchange: USD EUR
-Observation: 0.8276 EUR for 1 USD.
-Answer: The current exchange rate is 0.8276 EUR for 1 USD.
 
 `;
 
@@ -59,13 +52,18 @@ async function llama(question) {
 }
 
 function context(history) {
+  // make {question: question, answer: answer} => "Question: question\nAnswer: answer"
+  const capitalize = (str) => str[0].toUpperCase() + str.slice(1);
+  const flatten = (parts) => Object.keys(parts).filter(k => parts[k]).map(k => `${capitalize(k)}: ${parts[k]}`).join("\n");
   if (history.length > 0) {
-    const recents = history.slice(-3 * 2);
-    return `${HISTORY_MESSAGE}\n\n${recents.join("\n")}`;
-  } 
+    return `${HISTORY_MESSAGE}\n\n${history.map(flatten).join("\n")}`;
+  } else {
+    return '';
+  }
 }
 
 async function reason(history, inquiry) {
+
   const prompt = `${SYSTEM_MESSAGE}\n\n${context(history)}\n\nNow let's answer some question!\n\n${inquiry}`;
   const response = await llama(prompt);
 
@@ -130,9 +128,14 @@ async function answer(text) {
   return answer;
 }
 
-const history = ["The conversation discusses the capital and popular dish of Indonesia. The capital is Jakarta, and Nasi Goreng is considered the best food from the country."];
+let state = {
+  history: [],
+  source: "No source",
+  reference: "No reference"
+}
 
 async function handler(req, res) {
+
   const { url } = req;
 
   if (url === '/health') {
@@ -144,11 +147,13 @@ async function handler(req, res) {
     const parsedUrl = new URL(`http://localhost${url}`);
     const { search } = parsedUrl;
     const question = decodeURIComponent(search.substring(1));
-    history.push(question);
-    const answer = await reason(history, `Question: ${question}`);
-    console.log({ question, answer });
+    const answer = await reason(state.history, `Question: ${question}`);
     res.writeHead(200).end(answer);
-    history.push(answer);
+    state.history.push({question, answer});
+
+    while (state.history.length > 3) {
+      state.history.shift();
+    }
   } else {
     res.writeHead(404).end("Not Found");
   }
