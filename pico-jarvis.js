@@ -1,6 +1,8 @@
 import http from 'http';
 import fs from 'fs';
+import { readPdfPages } from "pdf-text-reader";
 
+const FEATURE_MODEL = "Xenova/all-MiniLM-L6-v2";
 const LLAMA_API_URL = process.env.LLAMA_API_URL || 'http://127.0.0.1:11434/api/generate';
 
 const HISTORY_MESSAGE = "Before formulating a thought, consider the following conversation history.";
@@ -143,6 +145,78 @@ function command(key, response) {
   }
   return false;
 }
+
+async function ingest(url) {
+  // sequence(5) => [0, 1, 2, 3, 4]
+  const sequence = (N) => Array.from({ length: N }, (_, i) => i);
+  
+  // create object {} to map page number with entries(content)
+  const paginate = (entries, pagination) => entries.map(entry => {
+    const { offset } = entry;
+    const page = pagination.findIndex(i => i > offset);
+    console.log({entry})
+    return { page, ...entry };
+  });
+
+  const isPunctuator = (ch) => (ch === ".") || (ch === "!") || (ch === "?");
+  const isWhiteSpace = (ch) => (ch === " ") || (ch === "\n") || (ch === "\t");
+
+  function split(text) {
+    const chunks = [];
+    let str = '';
+    let offset = 0;
+    for (let i = 0; i < text.length; ++i) {
+        const ch1 = text[i];
+        const ch2 = text[i + 1];
+        if (isPunctuator(ch1) && isWhiteSpace(ch2)) {
+          str += ch1;
+          const text = str.trim();
+          chunks.push({ offset, text });
+          str = '';
+          offset = i + 1;
+        }
+        str += ch1;
+    }
+    if (str.length > 0) {
+        chunks.push({ offset, text: str.trim() });
+    }
+    return chunks;
+  }
+
+  async function vectorize(text) {
+    const { pipeline } = await import("@xenova/transformers");
+    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantize: true });
+
+    const chunks = split(text);
+
+    const result = [];
+    for (let index = 0; index < chunks.length; index++) {
+      const { offset } = chunks[index]; 
+      const sentence = chunks.slice(index, index + 3).map(({ text }) => text).join(" ");
+      const output = await extractor([sentence], { polling: "mean", normalize: true });
+      const vector = output[0].data;
+      result.push({ index, offset, sentence, vector });
+    }
+    console.log(" RESULT: ", result)
+    return result;
+  }
+
+  console.log("INGEST: ");
+  const input = await readPdfPages({ url });
+  console.log(" url: ", url);
+  const pages = input.map((page, number) => {
+    return { number, content: page.lines.join(" ") }
+  });
+
+  console.log(" page count:", pages.length);
+  const pagination = sequence(pages.length).map(k => pages.slice(0, k + 1).reduce((loc, page) => loc + page.content.length, 0)); 
+  const text = pages.map(page => page.content).join(" ");
+  const document = paginate(await vectorize(text), pagination);
+  return document;
+
+}
+
+const document = await ingest("./document.pdf");
 
 async function handler(req, res) {
 
