@@ -79,7 +79,6 @@ function parse(text) {
   const start = text.lastIndexOf(ANCHOR + ":");
   if (start >= 0) {
     let str = text.substr(start);
-    console.log("PARSE: ");
     for (let i = 0; i < MARKERS.length; ++i) {
       const marker = MARKERS[i];
       const pos = str.lastIndexOf(marker + ":");
@@ -89,7 +88,6 @@ function parse(text) {
         str = str.slice(0, pos);
         const key = marker.toLowerCase();
         parts[key] = value;
-        console.log(` ${parts[key]}: ${value}`)
       }
     }
   }
@@ -111,7 +109,7 @@ async function reason(document, history, inquiry) {
   console.log(" observation:", observation);
   console.log(" intermediate answer:", steps.answer);
 
-  const { result, source, reference } = await act(document, inquiry, action ? action: "lookup: " + inquiry);
+  const { result, source, reference } = await act(document, inquiry, action ? action: "lookup: " + inquiry, observation);
 
   return { thought, action, observation, answer: result, source, reference };
 }
@@ -168,10 +166,16 @@ async function lookup(document, question, hint) {
     const vector = await encode(q);
     const matches = document.map((entry) => {
       const score = cos_sim(vector, entry.vector);
+      console.log(`Line ${entry.index + 1} ${Math.round(100 * score)}%: ${entry.sentence}`);
       return { score, ...entry };
     });
 
     const relevants = matches.sort((d1, d2) => d2.score - d1.score).slice(0, top_k);
+
+    relevants.forEach(match => {
+      const { index, offset, sentence, score } = match;
+      console.log(`  Line ${index + 1} @${offset}, match ${Math.round(100 * score)}%: ${sentence}`)
+    });
 
     return relevants;
 
@@ -193,6 +197,7 @@ async function lookup(document, question, hint) {
   const candidates = await search(question + " " + hint, document);
   const best = candidates.slice(0, 1).shift();
   console.log(" best score: ", best.score);
+  console.log({best})
   if (best.score < MIN_SCORE) {
     const FROM_MEMORY = "From my memory.";
     return { result: hint, source: FROM_MEMORY, reference: FROM_MEMORY };
@@ -215,6 +220,8 @@ async function act(document, question, action, observation) {
   const name = action.substring(0, sep);
   const arg = action.substring(sep + 1).trim();
 
+  console.log("LOOKUP:");
+  console.log({ name, arg, question, observation})
   if (name === "lookup") {
     const { result, source, reference } = await lookup(document, question, observation);
 
