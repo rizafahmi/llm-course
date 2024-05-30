@@ -153,7 +153,7 @@ async function lookup(document, question, hint) {
 
   async function encode(sentence) {
     const { pipeline } = await import("@xenova/transformers");
-    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantize: true });
+    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantized: true });
 
     const output = await extractor([sentence], { pooling: "mean", normalize: true });
     const vector = output[0].data;
@@ -281,6 +281,7 @@ async function ingest(url) {
         chunks.push({ offset, text });
         str = '';
         offset = i + 1;
+        continue;
       }
       str += ch1;
     }
@@ -292,15 +293,15 @@ async function ingest(url) {
 
   async function vectorize(text) {
     const { pipeline } = await import("@xenova/transformers");
-    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantize: true });
+    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantized: true });
 
     const chunks = split(text);
 
     const result = [];
-    for (let index = 0; index < chunks.length; index++) {
+    for (let index = 0; index < chunks.length; ++index) {
       const { offset } = chunks[index]; 
       const sentence = chunks.slice(index, index + 3).map(({ text }) => text).join(" ");
-      const output = await extractor([sentence], { polling: "mean", normalize: true });
+      const output = await extractor([sentence], { pooling: "mean", normalize: true });
       const vector = output[0].data;
       result.push({ index, offset, sentence, vector });
     }
