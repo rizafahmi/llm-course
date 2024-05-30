@@ -252,6 +252,16 @@ let state = {
   history: [],
   source: "No source",
   reference: "No reference"
+};
+
+// !history
+function command(key, response) {
+  const value = state[key.substring(1)];
+  if (value && typeof value === "string") {
+    response.writeHead(200).end(value);
+    return true;
+  }
+  return false;
 }
 
 async function ingest(url) {
@@ -262,6 +272,7 @@ async function ingest(url) {
   const paginate = (entries, pagination) => entries.map(entry => {
     const { offset } = entry;
     const page = pagination.findIndex(i => i > offset);
+
     return { page, ...entry };
   });
 
@@ -295,6 +306,7 @@ async function ingest(url) {
     const { pipeline } = await import("@xenova/transformers");
     const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantized: true });
 
+
     const chunks = split(text);
 
     const result = [];
@@ -320,6 +332,7 @@ async function ingest(url) {
   const text = pages.map(page => page.content).join(" ");
   const document = paginate(await vectorize(text), pagination);
   console.log(" Ingestion finish.");
+
   return document;
 
 }
@@ -342,6 +355,7 @@ async function handler(req, res) {
     const { thought, action, observation, answer, source, reference } = await reason(document, state.history, question);
     state.source = source;
     state.reference = reference;
+
     res.writeHead(200).end(answer);
     state.history.push({ question, thought, action, observation, answer });
 
