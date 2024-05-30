@@ -9,11 +9,15 @@ const HISTORY_MESSAGE = "Before formulating a thought, consider the following co
 
 const SYSTEM_MESSAGE = `You run in a process of Question, Thought, Action, Observation.
 
-Use Thought to describe your thoughts about the question you have been asked.
-Observation will be the result of running those actions.
+Think step by step. Always specify the full steps: Thought, Action, Observation, and Answer.
 
-If you can not answer the question from your memory, use Action to run one of these actions available to you:
+Use Thought to describe your thoughts about the question you have been asked.
+For Action, choose exactly one of the following:
+
 - lookup: terms
+
+Observation will be the result of running those actions.
+Finally at the end, state the Answer in the same language as the original Question.
 
 Here are some sample sessions.
 
@@ -29,7 +33,11 @@ Action: lookup: painter of Mona Lisa.
 Observation: Mona Lisa was painted by Leonardo da Vinci .
 Answer: Leonardo da Vinci painted Mona Lisa.
 
-`;
+{{CONTEXT}}
+
+Now it's your turn to answer the following!
+
+Question: {{QUESTION}}`;
 
 async function llama(question) {
   const method = 'POST';
@@ -64,48 +72,158 @@ function context(history) {
   }
 }
 
-async function reason(history, inquiry) {
-
-  const prompt = `${SYSTEM_MESSAGE}\n\n${context(history)}\n\nNow let's answer some question!\n\n${inquiry}`;
-  const response = await llama(prompt);
-
-  let conclusion = "";
-
-  const action = await act(response);
-  if (action === null) {
-    return answer(response);
-  } else {
-    conclusion = await llama(finalPrompt(inquiry, action.result));
+function parse(text) {
+  const parts = {};
+  const MARKERS = ["Answer", "Observation", "Action", "Thought"];
+  const ANCHOR = MARKERS.slice().pop();
+  const start = text.lastIndexOf(ANCHOR + ":");
+  if (start >= 0) {
+    let str = text.substr(start);
+    console.log("PARSE: ");
+    for (let i = 0; i < MARKERS.length; ++i) {
+      const marker = MARKERS[i];
+      const pos = str.lastIndexOf(marker + ":");
+      if (pos >= 0) {
+        const substr = str.substr(pos + marker.length + 1).trim();
+        const value = substr.split("\n").shift();
+        str = str.slice(0, pos);
+        const key = marker.toLowerCase();
+        parts[key] = value;
+        console.log(` ${parts[key]}: ${value}`)
+      }
+    }
   }
-
-  return conclusion;
+  return parts;
 }
 
-async function act(text) {
-  const MARKER = "Action:";
-  const pos = text.lastIndexOf(MARKER);
-  if (pos < 0) return null;
+async function reason(document, history, inquiry) {
 
-  const subtext = text.substr(pos) + "\n";
-  const matches = /Action:\s*(.*?)\n/.exec(subtext);
-  const action = matches[1];
-  if (!action) return null;
+  const prompt = SYSTEM_MESSAGE
+    .replace("{{CONTEXT}}", context(history))
+    .replace("{{QUESTION}}", inquiry);
+  const response = await llama(prompt);
+  const steps = parse(prompt + "\n" + response);
+  const { thought, action, observation } = steps;
+  console.log('REASON:');
+  console.log(' question:', inquiry);
+  console.log(" thought:", thought);
+  console.log(" action:", action);
+  console.log(" observation:", observation);
+  console.log(" intermediate answer:", steps.answer);
 
-  const SEPARATOR = ":";
-  const sep = action.indexOf(SEPARATOR);
-  if (sep < 0) return null;
+  const { result, source, reference } = await act(document, inquiry, action ? action: "lookup: " + inquiry);
 
-  const name = action.substring(0, sep);
-  const args = action.substring(sep + 1).trim().split(" ");
+  return { thought, action, observation, answer: result, source, reference };
+}
 
-  if (name === "lookup") return null;
-  if (name === "exchange") {
-    const result = await exchange(args[0].trim(), args[1].trim());
-    console.log("ACT Exchange", { args, result });
-    return { action, name, args, result };
+const LOOKUP_PROMPT = `You are an expert in retrieving information.
+You are given a {{KIND}}, and then you respond to a question.
+Avoid stating your personal opinion. Avoid making other commentary.
+Think step by step.
+
+Here is the {{KIND}}:
+
+{{PASSAGES}}
+
+(End of {{KIND}})
+
+Now it is time to use the above {{KIND}} exclusively to answer this.
+
+Question: {{QUESTION}}
+Thought: Let us the above reference document to find the answer.
+Answer:`;
+
+async function answer(kind, passages, question) {
+  console.log("ANSWER:");
+  console.log(" question:", question);
+  console.log("-------- passages ---------");
+  console.log(passages);
+  console.log("--------------------------");
+  const input = LOOKUP_PROMPT
+    .replaceAll("{{KIND}}", kind)
+    .replace("{{PASSAGES}}", passages)
+    .replace("{{QUESTION", question)
+  
+  const output = await llama(input);
+  const response = parse(input + output);
+  console.log(" answer: ", response.answer);
+  return response.answer;
+
+}
+
+async function lookup(document, question, hint) {
+
+  async function encode(sentence) {
+    const { pipeline } = await import("@xenova/transformers");
+    const extractor = await pipeline("feature-extraction", FEATURE_MODEL, { quantize: true });
+
+    const output = await extractor([sentence], { pooling: "mean", normalize: true });
+    const vector = output[0].data;
+    return vector;
   }
-  console.error("Not recognized action", { name, args });
-  return null;
+
+  async function search(q, document, top_k = 3) {
+    const { cos_sim } = await import("@xenova/transformers");
+
+    const vector = await encode(q);
+    const matches = document.map((entry) => {
+      const score = cos_sim(vector, entry.vector);
+      return { score, ...entry };
+    });
+
+    const relevants = matches.sort((d1, d2) => d2.score - d1.score).slice(0, top_k);
+
+    return relevants;
+
+  }
+
+  const ascending = (x, y) => x - y;
+  const dedupe = (numbers) => [...new Set(numbers)];
+
+  const MIN_SCORE = 0.4;
+
+  if (document.length === 0) {
+    throw new Error("Document is not indexed.")
+  }
+
+  console.log("LOOKUP:");
+  console.log(" question: ", question);
+  console.log(" hint: ", hint);
+
+  const candidates = await search(question + " " + hint, document);
+  const best = candidates.slice(0, 1).shift();
+  console.log(" best score: ", best.score);
+  if (best.score < MIN_SCORE) {
+    const FROM_MEMORY = "From my memory.";
+    return { result: hint, source: FROM_MEMORY, reference: FROM_MEMORY };
+  }
+
+  const indexes = dedupe(candidates.map(r => r.index)).sort(ascending);
+  const relevants = document.filter(({ index }) => indexes.includes(index));
+  const passages = relevants.map(({ sentence }) => sentence).join(" ");
+  const result = await answer("reference document", passages, question);
+
+  const refs = await search(result || hint, relevants);
+  const top = refs.slice(0, 1).pop();
+  let source = `Best source (page ${top.page + 1}, score ${Math.round(top.score * 100)}%)\n${top.sentence}`;
+  console.log(" source: ", source);
+  return { result, source, reference: passages };
+}
+
+async function act(document, question, action, observation) {
+  const sep = action.indexOf(":");
+  const name = action.substring(0, sep);
+  const arg = action.substring(sep + 1).trim();
+
+  if (name === "lookup") {
+    const { result, source, reference } = await lookup(document, question, observation);
+
+    return { result, source, reference };
+  }
+
+  // fallback to a manual lookup
+  console.error("Not recognized action", name, arg);
+  return await act(document, question, "lookup: " + question, observation);
 }
 function finalPrompt(inquiry, observation) {
   return `${inquiry}
@@ -122,13 +240,6 @@ async function exchange(from, to) {
   const rate = data.rates[to];
   return `As per ${data.time_last_update_utc}, 1 ${from} equal to ${Math.ceil(rate)} ${from}.`;
 }
-async function answer(text) {
-  const MARKER = "Answer:";
-  const pos = text.lastIndexOf(MARKER);
-  if (pos < 0) return "?";
-  const answer = text.substr(pos + MARKER.length).trim();
-  return answer;
-}
 
 let state = {
   history: [],
@@ -144,7 +255,6 @@ async function ingest(url) {
   const paginate = (entries, pagination) => entries.map(entry => {
     const { offset } = entry;
     const page = pagination.findIndex(i => i > offset);
-    console.log({entry})
     return { page, ...entry };
   });
 
@@ -156,16 +266,16 @@ async function ingest(url) {
     let str = '';
     let offset = 0;
     for (let i = 0; i < text.length; ++i) {
-        const ch1 = text[i];
-        const ch2 = text[i + 1];
-        if (isPunctuator(ch1) && isWhiteSpace(ch2)) {
-          str += ch1;
-          const text = str.trim();
-          chunks.push({ offset, text });
-          str = '';
-          offset = i + 1;
-        }
+      const ch1 = text[i];
+      const ch2 = text[i + 1];
+      if (isPunctuator(ch1) && isWhiteSpace(ch2)) {
         str += ch1;
+        const text = str.trim();
+        chunks.push({ offset, text });
+        str = '';
+        offset = i + 1;
+      }
+      str += ch1;
     }
     if (str.length > 0) {
         chunks.push({ offset, text: str.trim() });
@@ -187,7 +297,6 @@ async function ingest(url) {
       const vector = output[0].data;
       result.push({ index, offset, sentence, vector });
     }
-    console.log(" RESULT: ", result)
     return result;
   }
 
@@ -202,6 +311,7 @@ async function ingest(url) {
   const pagination = sequence(pages.length).map(k => pages.slice(0, k + 1).reduce((loc, page) => loc + page.content.length, 0)); 
   const text = pages.map(page => page.content).join(" ");
   const document = paginate(await vectorize(text), pagination);
+  console.log(" Ingestion finish.");
   return document;
 
 }
@@ -221,9 +331,11 @@ async function handler(req, res) {
     const parsedUrl = new URL(`http://localhost${url}`);
     const { search } = parsedUrl;
     const question = decodeURIComponent(search.substring(1));
-    const answer = await reason(state.history, `Question: ${question}`);
+    const { thought, action, observation, answer, source, reference } = await reason(document, state.history, question);
+    state.source = source;
+    state.reference = reference;
     res.writeHead(200).end(answer);
-    state.history.push({question, answer});
+    state.history.push({ question, thought, action, observation, answer });
 
     while (state.history.length > 3) {
       state.history.shift();
